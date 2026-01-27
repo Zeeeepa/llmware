@@ -19,22 +19,16 @@ creating a new embedding, as well as searching and deleting the vector index. Th
 _EmbeddingUtils class, which provides a set of functions used by all vector database classes.
 """
 
-import os
-import logging
+import os, logging, re, time, uuid, itertools
 import numpy as np
-import re
-import time
-import uuid
-import itertools
 from importlib import util
 import importlib
 
-from llmware.configs import LLMWareConfig, MongoConfig, MilvusConfig, PostgresConfig, RedisConfig, \
-    PineconeConfig, QdrantConfig, Neo4jConfig, LanceDBConfig, ChromaDBConfig, VectorDBRegistry
-from llmware.exceptions import (UnsupportedEmbeddingDatabaseException, EmbeddingModelNotFoundException,
-                                DependencyNotInstalledException, LLMWareException)
-from llmware.resources import CollectionRetrieval, CollectionWriter
-from llmware.status import Status
+from llmware.configs import (LLMWareConfig, MongoConfig, MilvusConfig, PostgresConfig, RedisConfig,
+                             PineconeConfig, QdrantConfig, Neo4jConfig, LanceDBConfig, ChromaDBConfig, VectorDBRegistry,
+                             LLMWareException, DependencyNotInstalledException, ModelNotFoundException)
+
+from llmware.resources import CollectionRetrieval, CollectionWriter, Status
 from llmware.util import Utilities
 
 """ By default, no vector db drivers are loaded into global program space unless and until they are invoked.  Within 
@@ -163,7 +157,8 @@ class EmbeddingHandler:
         """ Looks up and loads the selected vector database """
 
         if not embedding_db in self.supported_embedding_dbs:
-            raise UnsupportedEmbeddingDatabaseException(embedding_db)
+            raise LLMWareException(message=f"EmbeddingHandler - load_embedding_db - "
+                                           f"selected embedding db is not supported - {embedding_db}")
 
         vdb = self.supported_embedding_dbs[embedding_db]
 
@@ -403,7 +398,7 @@ class EmbeddingMilvus:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.model=model
         self.model_name=model_name
@@ -710,7 +705,7 @@ class EmbeddingFAISS:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.model=model
         self.model_name=model_name
@@ -906,7 +901,7 @@ class EmbeddingLanceDB:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.model = model
         self.model_name = model_name
@@ -1090,7 +1085,7 @@ class EmbeddingPinecone:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.model = model
         self.model_name = model_name
@@ -1293,7 +1288,7 @@ class EmbeddingMongoAtlas:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         # if model passed (not None), then use model name
         if self.model:
@@ -2333,7 +2328,7 @@ class EmbeddingNeo4j:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.library = library
         self.library_name = library.library_name
@@ -2598,7 +2593,7 @@ class EmbeddingChromaDB:
 
         # look up model card
         if not model and not model_name:
-            raise EmbeddingModelNotFoundException("no-model-or-model-name-provided")
+            raise ModelNotFoundException("no-model-or-model-name-provided")
 
         self.library = library
         self.library_name = library.library_name
