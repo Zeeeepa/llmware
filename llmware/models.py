@@ -77,6 +77,7 @@ class _ModelRegistry:
     model_classes = {"ONNXGenerativeModel": {"module": "llmware.models", "open_source": True},
                      "OVGenerativeModel": {"module": "llmware.models", "open_source": True},
                      "GGUFGenerativeModel": {"module": "llmware.models", "open_source":True},
+                     "GGUFVisionGenerativeModel": {"module": "llmware.models", "open_source":True},
                      "OVVisionGenerativeModel": {"module": "llmware.models", "open_source": True},
                      "ONNXQNNGenerativeModel": {"module": "llmware.models", "open_source":True},
                      "ONNXEmbeddingModel": {"module": "llmware.models", "open_source": True},
@@ -9052,8 +9053,8 @@ class HFGenerativeModel(BaseModel):
 
         #   show warning if function calling model
         if self.fc_supported:
-            logger.warning("warning: this is a function calling model - using .inference may lead to unexpected "
-                            "results.   Recommended to use the .function_call method to ensure correct prompt "
+            logger.warning("This is a function calling model - using .inference may lead to unexpected "
+                            "results. Recommended to use the .function_call method to ensure correct prompt "
                             "template packaging.")
 
         if inference_dict:
@@ -9814,15 +9815,9 @@ class GGUFGenerativeModel(BaseModel):
     """ Implementation of GGUF Model class - instantiate and run inferences and function calls using
     GGUF llama.cpp models """
 
-    #  backend llama cpp binaries and ctypes interfaces updated in llmware v0.4.0 - March 2025
-    #  prebuilt binaries included for the following platforms:
-    #  -- Mac Metal (with Accelerate)
-    #  -- Windows x86, Windows ARM64 and Windows CUDA
-    #  -- Linux x86 and Linux CUDA
-
     def __init__(self, model_name=None, model_card=None, api_key=None, prompt_wrapper=None, instruction_following=False,
                  context_window=2048, use_gpu_if_available=True, get_logits=False,
-                 sample=True ,max_output=100, temperature=0.3, api_endpoint=None, **kwargs):
+                 sample=True, max_output=100, temperature=0.3, api_endpoint=None, **kwargs):
 
         super().__init__(**kwargs)
 
@@ -9839,11 +9834,13 @@ class GGUFGenerativeModel(BaseModel):
 
         #   set verbose level in environ level - will be picked up by callback in llama_cpp
         os.environ["llama_cpp_verbose"] = GGUFConfigs().get_config("llama_cpp_verbose")
+        # os.environ["llama_cpp_verbose"] = "ON"
+        #   adding new parameters - use_sampling, temperature, max_output
 
-        self.use_sampling =sample
-        self.sample =sample
+        self.use_sampling = sample
+        self.sample = sample
 
-        self.get_logits =get_logits
+        self.get_logits = get_logits
         self.logits_record = []
         self.output_tokens = []
         self.top_logit_count = 10
@@ -9853,25 +9850,20 @@ class GGUFGenerativeModel(BaseModel):
         gguf_configs_max = GGUFConfigs().get_config("max_output_tokens")
 
         if max_output > gguf_configs_max:
-
             # truncate max output to GGUFConfigs max
-            logger.warning(f"Requested output len - {max_output} > {gguf_configs_max}, which is the "
-                           f"current GGUF default max.\n--Truncating to {gguf_configs_max} output tokens.\n--Note: "
-                           f"to change GGUF default max to new integer amount, say 500:\n "
-                           f" GGUFConfigs().set_config(\"max_output_tokens\", 500)"
-                           )
+            # logger.warning(f"update: requested output len - {max_output} > {gguf_configs_max}, which is the "
+            #                f"current GGUF default max.\n--Truncating to {gguf_configs_max} output tokens.\n--Note: "
+            #                f"to change GGUF default max to new integer amount, say 500:\n "
+            #                f"  GGUFConfigs().set_config(\"max_output_tokens\", 500)"
+            #                )
 
             max_output = gguf_configs_max
 
-        self.max_output =max_output
-
-        # self.n_seq_max = GGUFConfigs().get_config("max_output_tokens")
-        #   *** NEW - CHANGE ***
+        self.max_output = max_output
         self.n_seq_max = max_output
 
         self.target_requested_output_tokens = self.n_seq_max
 
-        # TODO: cleanup repetitive output size attributes
         self.max_total_len = 2048
         self.max_input_len = int(0.5 * context_window)
         self.llm_max_output_len = int(0.5 * context_window)
@@ -9965,7 +9957,7 @@ class GGUFGenerativeModel(BaseModel):
                 self.use_gpu = False
             else:
                 # min drivers set to the lowest level for CUDA 12.1 on Linux
-                min_drivers = [525 ,60]
+                min_drivers = [525, 60]
                 if sys.platform.lower() == "win32":
                     min_drivers = GGUFConfigs().get_config("cuda_windows_driver_min")
 
@@ -9988,6 +9980,9 @@ class GGUFGenerativeModel(BaseModel):
         # self.n_batch = 512
 
         self.last_n_tokens_size = 64
+
+        # by default
+        self._logits_all = False
 
         self._n_vocab = None
         self._n_ctx = None
@@ -10015,7 +10010,6 @@ class GGUFGenerativeModel(BaseModel):
 
         self.model_repo_path = None
 
-        # new llama sampler object
         self._sampler = None
         self.vocab = None
 
@@ -10024,7 +10018,7 @@ class GGUFGenerativeModel(BaseModel):
 
         self.post_init()
 
-    def load_model_for_inference(self, model_repo_path, model_card = None, **kwargs):
+    def load_model_for_inference(self, model_repo_path, model_card=None, **kwargs):
 
         """ Loads and instantiates model along with other required objects. """
 
@@ -10051,9 +10045,10 @@ class GGUFGenerativeModel(BaseModel):
         self.model_params = self._lib.llama_model_default_params()
 
         # update model params parameters
-        self.model_params.n_gpu_layers = 0
+        # important to set this correctly for Mac performance
+        self.model_params.n_gpu_layers = 50
 
-        # TODO: change default split_mode from 1 -> 0
+        # deprecated - change default split_mode from 1 -> 0
         # self.model_params.split_mode = 0
 
         self.model_params.main_gpu = 0
@@ -10064,7 +10059,6 @@ class GGUFGenerativeModel(BaseModel):
         if self.use_gpu:
             # on darwin, keep at 0 - on win32 and linux - set to 50 by default (e.g., shift all model layers to GPU)
             if sys.platform.lower() == "win32" or sys.platform.lower().startswith("linux"):
-
                 self.model_params.n_gpu_layers = GGUFConfigs().get_config("n_gpu_layers")
 
         # update context parameters
@@ -10074,22 +10068,46 @@ class GGUFGenerativeModel(BaseModel):
         self.context_params.n_ctx = max(2048, self.max_total_len)
         self.context_params.n_batch = self.n_batch
 
-        # context parameters
         n_ubatch = 512
         self.context_params.n_ubatch = min(self.n_batch, n_ubatch)
 
-        # parameterize threads - makes a big difference in performance
-        # vs 6 & 12
-        self.context_params.n_threads = max(multiprocessing.cpu_count() // 2 ,1)
+        # check on QC/ARM if 6 & 12 are ideal
+        # big improvement on MAC with formula below
+        # QC/ARM = 6
+        import multiprocessing
+
+        self.context_params.n_threads = max(multiprocessing.cpu_count() // 2, 1)
+        # QC/ARM = 12
         self.context_params.n_threads_batch = multiprocessing.cpu_count()
 
-        # self.context_params.rope_scaling_type = (LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED)
-        # self.context_params.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED
-        self.context_params.rope_freq_base = 0.0 # (rope_freq_base if rope_freq_base != 0.0 else 0)
+        self.context_params.rope_scaling_type = LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED
+        self.context_params.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED
+        self.context_params.rope_freq_base = 0.0  # (rope_freq_base if rope_freq_base != 0.0 else 0)
+        self.context_params.rope_freq_scale = 0.0
+
+        # changed: defaults changed in llama cpp from build b6323 -> b6325
+        # self.context_params.yarn_ext_factor = -1.0
+        # self.context_params.yarn_attn_factor = 1.0
+        # self.context_params.yarn_beta_fast = 32.0
+        # self.context_params.yarn_beta_slow = 1.0
+        # end changes
+
         self.context_params.type_k = 1
         self.context_params.type_v = 1
         self.context_params.offload_kqv = True
         self.context_params.yarn_orig_ctx = 0
+        self.context_params.no_perf = False
+
+        # changes - llama cpp change from b6323 -> b6325
+        self.context_params.flash_attn = 0 # False
+        # self.context_params.flash_attn_type = 0
+        # end changes
+
+        self.context_params.embedding = False
+        self.context_params.swa_full = None
+        self.context_params.op_offloat = None
+
+        self.context_params.kv_unified = False
 
         if model_card:
             self.model_name = model_card["model_name"].split("/")[-1]
@@ -10100,8 +10118,11 @@ class GGUFGenerativeModel(BaseModel):
 
         #   loads and instantiates the key objects
         self._model = _LlamaModel(self._lib, path_model=self.model_path, params=self.model_params)
-        self._ctx = _LlamaContext(self._lib ,model=self._model, params=self.context_params)
-        self._batch = _LlamaBatch(self._lib ,n_tokens=self.n_batch, embd=0, n_seq_max=self.context_params.n_ctx)
+
+        self._ctx = _LlamaContext(self._lib, model=self._model, params=self.context_params)
+
+        self._batch = _LlamaBatch(self._lib, n_tokens=self.n_batch, embd=0, n_seq_max=self.context_params.n_ctx)
+
         self.vocab = self._lib.llama_model_get_vocab(self._model.model)
 
         self._n_vocab = self.n_vocab()
@@ -10116,6 +10137,8 @@ class GGUFGenerativeModel(BaseModel):
         self.scores = np.ndarray((self._n_ctx, self._n_vocab), dtype=np.single)
 
         self._sampler = self._init_sampler()
+
+        logger.info("GGUFGenerativeModel - loaded model - ready for inference")
 
         return self
 
@@ -10237,8 +10260,8 @@ class GGUFGenerativeModel(BaseModel):
             if os.path.exists(_lib_path):
 
                 try:
-                    # return ctypes.CDLL(str(_lib_path), winmode=1)
                     return ctypes.cdll.LoadLibrary(str(_lib_path))
+
                 except Exception as e:
 
                     #  if fail, and CUDA selected, then try to fall back to matching CPU version
@@ -10247,7 +10270,6 @@ class GGUFGenerativeModel(BaseModel):
 
                             logger.warning("Not successful loading preferred lib so reverting to fallback lib.")
 
-                            # return ctypes.CDLL(str(fall_back_option), winmode=1)
                             return ctypes.cdll.LoadLibrary(str(_lib_path))
                         except:
 
@@ -10272,20 +10294,22 @@ class GGUFGenerativeModel(BaseModel):
         params = llama_sampler_chain_params()
         self._sampler = self._lib.llama_sampler_chain_init(params)
 
-        #TODO: will expose more sampling options
-
         temp = 0.0
 
         if temp < 0.0:
+            # sampler.add_softmax()
             self._lib.llama_sampler_chain_add(self._sampler, self._lib.llama_sampler_init_softmax())
+            # sampler.add_dist(self._seed)
 
         elif temp == 0.0:
+            # sampler.add_greedy()
             greedy_sampler = self._lib.llama_sampler_init_greedy()
+
             self._lib.llama_sampler_chain_add(self._sampler, greedy_sampler)
 
         return self._sampler
 
-    def sample_gguf(self, idx= None):
+    def sample_gguf(self, idx=None):
 
         """ Adapted to sample_gguf to avoid potential name space conflicts. """
 
@@ -10303,11 +10327,13 @@ class GGUFGenerativeModel(BaseModel):
 
         token = self._lib.llama_sampler_sample(self._sampler, self._ctx.ctx, ridx)
 
+        # token = int(self.logits_record[-1][0][0])
+
         if tmp_sampler:
             self._sampler = None
         return token
 
-    def _inference (self, prompt):
+    def _inference(self, prompt):
 
         """ Tokenizes the prompt and executes generation loop. """
 
@@ -10330,9 +10356,9 @@ class GGUFGenerativeModel(BaseModel):
         context_window = self.n_ctx()
 
         if input_len > context_window:
-            logger.warning("GGUFGenerativeModel - input is too long for model context window - truncating")
+            logger.info("GGUFGenerativeModel - input is too long for model context window - truncating")
             min_output_len = 10
-            prompt_tokens = prompt_tokens[0:context_window -min_output_len]
+            prompt_tokens = prompt_tokens[0:context_window - min_output_len]
             input_len = len(prompt_tokens)
 
         text = b""
@@ -10400,18 +10426,19 @@ class GGUFGenerativeModel(BaseModel):
         if get_first_token_speed:
 
             output = {"llm_response": text_str,
-                      "usage": {"input": len(prompt_tokens) ,"output": len(completion_tokens),
+                      "usage": {"input": len(prompt_tokens), "output": len(completion_tokens),
                                 "total": len(prompt_tokens) + len(completion_tokens), "metric": "tokens",
                                 "processing_time": time.time() - t0,
                                 "first_token_processing_time": first_token_processing_time}}
         else:
             output = {"llm_response": text_str,
-                      "usage": {"input": len(prompt_tokens) ,"output": len(completion_tokens),
+                      "usage": {"input": len(prompt_tokens), "output": len(completion_tokens),
                                 "total": len(prompt_tokens) + len(completion_tokens), "metric": "tokens",
                                 "processing_time": time.time() - t0}}
 
         if self.get_logits:
-            output.update({"logits": self.logits_record, "output_tokens": self.output_tokens})
+            output.update({"logits": self.logits_record})
+            output.update({"output_tokens": self.output_tokens})
 
         return output
 
@@ -10419,41 +10446,45 @@ class GGUFGenerativeModel(BaseModel):
 
         """ Generator that samples the model and yields tokens until stopped. """
 
+        logger.debug("GGUFGenerativeModel - starting generation loop")
+
         # Reset the model state
         if reset:
             self.reset()
 
-        sample_idx = self.n_tokens + len(tokens) -1
+        sample_idx = self.n_tokens + len(tokens) - 1
         tokens = list(tokens)
 
         tokens_created = 0
         input_start_len = len(tokens)
 
+        memory = self._ctx.memory
+
         # Eval and sample
         while True:
 
-            self._lib.llama_kv_cache_seq_rm(self._ctx.ctx, -1, self.n_tokens, -1)
+            self._lib.llama_memory_seq_rm(memory, -1, self.n_tokens, -1)
 
             for i in range(0, len(tokens), self.n_batch):
                 batch = tokens[i: min(len(tokens), i + self.n_batch)]
                 n_past = self.n_tokens
                 n_tokens = len(batch)
 
-                self._batch.set_batch(batch=batch, n_past=n_past, logits_all=self.context_params.logits_all)
+                self._batch.set_batch(batch=batch, n_past=n_past, logits_all=self._logits_all)
 
                 return_code = self._lib.llama_decode(self._ctx.ctx, self._batch.batch)
 
                 # TODO: add better error handling if return_code 1 - usually overflow of ctx
                 if return_code != 0:
-                    raise RuntimeError(f"error: llama_decode call returned {return_code} - in most cases, this "
+                    raise RuntimeError(f"GGUFGenerativeModel - generate - llama_decode call returned {return_code} - in most cases, this "
                                        f"is due to exceeding the maximum context window.")
 
                 self.input_ids[n_past: n_past + n_tokens] = batch
                 rows = n_tokens
                 cols = self._n_vocab
-                offset = (0 if self.context_params.logits_all else n_tokens - 1)
+                offset = (0 if self._logits_all else n_tokens - 1)
 
-                if self.context_params.logits_all:
+                if self._logits_all:
                     rows = n_tokens
                     cols = self._n_vocab
                     logits = np.ctypeslib.as_array(
@@ -10461,6 +10492,9 @@ class GGUFGenerativeModel(BaseModel):
                     self.scores[n_past: n_past + n_tokens, :].reshape(-1)[::] = logits
 
                 self.n_tokens += n_tokens
+
+                # TODO: inserting test for logits
+                # self.register_top_logits()
 
             while sample_idx < self.n_tokens:
 
@@ -10486,7 +10520,8 @@ class GGUFGenerativeModel(BaseModel):
                 if sample_idx < self.n_tokens and token != self._input_ids[sample_idx]:
                     self.n_tokens = sample_idx
 
-                    self._lib.llama_kv_cache_seq_rm(self._ctx.ctx, -1, self.n_tokens, -1)
+                    self._lib.llama_memory_seq_rm(self._lib.llama_get_memory(self._ctx.ctx), -1, self.n_tokens, -1)
+                    # self._lib.llama_kv_cache_seq_rm(self._ctx.ctx, -1, self.n_tokens, -1)
 
                     break
 
@@ -10511,11 +10546,12 @@ class GGUFGenerativeModel(BaseModel):
             n_tokens = self._lib.llama_tokenize(self.vocab, text, len(text), tokens, n_tokens, add_bos, special)
 
             if n_tokens < 0:
-                raise RuntimeError(f'error: GGUFGenerativeModel - tokenization error - "{text}" - n_tokens={n_tokens}')
+                raise RuntimeError(f"GGUFGenerativeModel - tokenization error - {text} - "
+                                   f"n_tokens={n_tokens}")
 
         return list(tokens[:n_tokens])
 
-    def detokenize(self, tokens, special = False):
+    def detokenize(self, tokens, special: bool = False) -> bytes:
         output = b""
         size = 32
         buffer = (ctypes.c_char * size)()
@@ -10529,6 +10565,7 @@ class GGUFGenerativeModel(BaseModel):
 
         # NOTE: Llama1 models automatically added a space at the start of the prompt
         # this line removes a leading space if the first token is a beginning of sentence token
+
         return (
             output[1:]
             if len(tokens) > 0 and tokens[0] == self.token_bos() and output[0:1] == b" "
@@ -10578,7 +10615,7 @@ class GGUFGenerativeModel(BaseModel):
 
         # set api_key
         os.environ[env_var] = api_key
-        logger.info("update: added and stored GGUF api_key in environmental variable- %s", env_var)
+        logger.info("GGUFGenerativeModel - added and stored GGUF api_key in environmental variable- %s", env_var)
 
         return self
 
@@ -10589,17 +10626,18 @@ class GGUFGenerativeModel(BaseModel):
         self.api_key = os.environ.get(env_var)
 
         if not self.api_key:
-            logger.error("error: _get_api_key could not successfully retrieve value from: %s ", env_var)
+            logger.error("GGUFGenerativeModel - _get_api_key could not successfully retrieve value from: %s ", env_var)
 
         return self.api_key
 
     def token_counter(self, text_sample):
 
-        """ Fast approximate token counter. """
+        if not text_sample:
+            tokens = 0
+        else:
+            tokens = len(self.tokenize(text_sample.encode("utf-8")))
 
-        tokenizer = Utilities().get_default_tokenizer()
-        toks = tokenizer.encode(text_sample).ids
-        return len(toks)
+        return tokens
 
     @property
     def ctx(self):
@@ -10625,7 +10663,7 @@ class GGUFGenerativeModel(BaseModel):
     def eval_logits(self):
         return deque(
             self.scores[: self.n_tokens, :].tolist(),
-            maxlen=self._n_ctx if self.context_params.logits_all else 1,
+            maxlen=self._n_ctx if self._logits_all else 1,
         )
 
     def reset(self):
@@ -10638,22 +10676,18 @@ class GGUFGenerativeModel(BaseModel):
         return self._lib.llama_n_ctx_train(self._model.model)
 
     def n_vocab(self):
-        # previous: llama_model_get_vocab(model)
         n_vocab = self._lib.llama_n_vocab(self._lib.llama_model_get_vocab(self._model.model))
         return n_vocab
 
     def token_eos(self):
-        # previous: return self._lib.llama_token_eos(self._model.model)
         eos = self._lib.llama_token_eos(self.vocab)
         return eos
 
     def token_bos(self):
-        # previous: return self._lib.llama_token_bos(self._model.model)
         bos = self._lib.llama_token_bos(self.vocab)
         return bos
 
     def token_nl(self):
-        # previous: return self._lib.llama_token_nl(self._model.model)
         token_nl = self._lib.llama_token_nl(self._lib.llama_model_get_vocab(self._model.model))
         return token_nl
 
@@ -10662,65 +10696,13 @@ class GGUFGenerativeModel(BaseModel):
         """ Unloads a model to release memory """
 
         # note: removing pointer seems to safely remove from Python reference tracking
+        #   --will evaluate under multiple scenarios if free explicitly needs to be called in llama.cpp engine
 
         self._batch = None
         self._ctx = None
         self._model = None
 
         return 0
-
-    def prompt_engineer(self, query, context, inference_dict):
-
-        """ Prompt engineering, packaging and templating. """
-
-        # if loaded model was not pretrained on instruction_following, then skip any instructions
-        if not self.instruction_following:
-
-            if context:
-                output = context + "\n" + query
-            else:
-                output = query
-
-            if self.prompt_wrapper:
-                output = PromptCatalog().apply_prompt_wrapper(output, self.prompt_wrapper,
-                                                              instruction=None)
-
-            return output
-
-        # move ahead to add instructions and prompt engineering
-
-        if not self.add_prompt_engineering:
-            if context:
-                selected_prompt = "default_with_context"
-            else:
-                selected_prompt = "default_no_context"
-        else:
-            selected_prompt = self.add_prompt_engineering
-
-        prompt_dict = PromptCatalog().build_core_prompt(prompt_name=selected_prompt,
-                                                        separator=self.separator,
-                                                        query=query,
-                                                        context=context,
-                                                        inference_dict=inference_dict)
-
-        if prompt_dict:
-            prompt_engineered = prompt_dict["core_prompt"]
-        else:
-            # default case
-            prompt_engineered = "Please read the following text: " + context + self.separator
-            prompt_engineered += "Based on this text, please answer the question: " + query + self.separator
-            prompt_engineered += "Please answer the question only with facts provided in the materials.  " \
-                                 "If the question can not be answered in the materials, then please " \
-                                 "respond 'Not Found.'"
-
-        #   final wrapping, based on model-specific instruct training format
-        #   --provides a final 'wrapper' around the core prompt text, based on model expectations
-
-        if self.prompt_wrapper:
-            prompt_engineered = PromptCatalog().apply_prompt_wrapper(prompt_engineered, self.prompt_wrapper,
-                                                                     instruction=None)
-
-        return prompt_engineered
 
     def inference(self, prompt, add_context=None, add_prompt_engineering=None, api_key=None, inference_dict=None,
                   get_logits=False):
@@ -10749,9 +10731,9 @@ class GGUFGenerativeModel(BaseModel):
 
         #   show warning if function calling model
         if self.fc_supported:
-            logger.warning("warning: this is a function calling model - using .inference may lead to unexpected "
-                           "results.   Recommended to use the .function_call method to ensure correct prompt "
-                           "template packaging.")
+            logger.info("GGUFGenerativeModel - this is a function calling model - using .inference may lead to unexpected "
+                        "results. Recommended to use the .function_call method to ensure correct prompt "
+                        "template packaging.")
 
         # start with clean logits_record and output_tokens for each function call
         self.logits_record = []
@@ -10773,6 +10755,7 @@ class GGUFGenerativeModel(BaseModel):
 
         #   START - route to api endpoint
         if self.api_endpoint:
+            sd = self.to_state_dict()
             return self.inference_over_api_endpoint(self.prompt, context=self.add_context,
                                                     inference_dict=inference_dict)
 
@@ -10811,13 +10794,13 @@ class GGUFGenerativeModel(BaseModel):
         return output_response
 
     def function_call(self, context, function=None, params=None, get_logits=True,
-                      temperature=-99, max_output=None):
+                      temperature=-99.0, max_output=None):
 
         """ This is the key inference method for SLIM models - takes a context passage and a key list
         which is packaged in the prompt as the keys for python dictionary output"""
 
         if not self.fc_supported:
-            logger.warning("warning: GGUFGenerativeModel - loaded model does not support function calls.  "
+            logger.warning("GGUFGenerativeModel - loaded model does not support function calls.  "
                            "Please either use the standard .inference method with this model, or use a GGUF "
                            "model that has 'function_calls' key set to True in its model card.")
             return []
@@ -10896,6 +10879,7 @@ class GGUFGenerativeModel(BaseModel):
         output_str = output_response["llm_response"]
 
         try:
+            import ast
             output_dict = ast.literal_eval(output_str)
 
             output_type = "dict"
@@ -10920,10 +10904,10 @@ class GGUFGenerativeModel(BaseModel):
                     output_response.update({"llm_response": output_rem})
 
             if output_type == "string":
-                logger.warning("Automatic conversion of function call output failed, and attempt to "
+                logger.warning("GGUFGenerativeModel - function call - automatic conversion of function call output failed, and attempt to "
                                "remediate was not successful - %s ", output_str)
             else:
-                logger.info("Function call output could not be automatically converted, but remediation "
+                logger.info("GGUFGenerativeModel - function call output could not be automatically converted, but remediation "
                             "was successful to type - %s ", output_type)
 
         #   update linked to BaseModel
@@ -10941,7 +10925,7 @@ class GGUFGenerativeModel(BaseModel):
         return output_response
 
     def stream(self, prompt, add_context=None, add_prompt_engineering=None, api_key=None, inference_dict=None,
-               get_logits=False, disable_eos=False):
+               get_logits=False, disable_eos=False, skip_pe_override=False):
 
         """ Main method for text streaming generation. Returns a generator function that yields one
         token at a time for real-time streaming to console or UI. """
@@ -10964,11 +10948,9 @@ class GGUFGenerativeModel(BaseModel):
             else:
                 self.add_prompt_engineering = "default_no_context"
 
-        #   end - update
-
         #   show warning if function calling model
         if self.fc_supported:
-            logger.warning("This is a function calling model - using .inference may lead to unexpected "
+            logger.info("GGUFGenerativeModel - this is a function calling model - using .inference may lead to unexpected "
                            "results.  Recommended to use the .function_call method to ensure correct prompt "
                            "template packaging.")
 
@@ -10990,9 +10972,7 @@ class GGUFGenerativeModel(BaseModel):
         #   preview before generation
         self.preview()
 
-        # prompt = prompt
-
-        if self.add_prompt_engineering:
+        if self.add_prompt_engineering and not skip_pe_override:
             prompt_enriched = self.prompt_engineer(self.prompt, self.add_context, inference_dict=inference_dict)
             prompt_final = prompt_enriched
 
@@ -11005,12 +10985,13 @@ class GGUFGenerativeModel(BaseModel):
             prompt = prompt_final + self.trailing_space
 
         if self.api_endpoint:
-            return self.inference_over_api_endpoint(self.prompt, context=self.add_context,
-                                                    inference_dict=inference_dict)
+            """ Not implemented """
+            # continue with local execution ...
 
-        #   inference setup starts here
-
+        #   starts _inference here
         completion_tokens = [] if len(prompt) > 0 else [self.token_bos()]
+
+        logger.info(f"GGUFGenerative - stream - model name - {self.model_name}")
 
         prompt_tokens = (
             (
@@ -11026,8 +11007,10 @@ class GGUFGenerativeModel(BaseModel):
         input_len = len(prompt_tokens)
         context_window = self.n_ctx()
 
+        logger.info(f"GGUFGenerativeModel stream - input token len - {input_len}")
+
         if input_len > context_window:
-            logger.warning("update: GGUFGenerativeModel - input is too long for model context window - truncating")
+            logger.warning("GGUFGenerativeModel - input is too long for model context window - truncating")
             min_output_len = 10
             prompt_tokens = prompt_tokens[0:context_window - min_output_len]
             input_len = len(prompt_tokens)
@@ -11053,6 +11036,14 @@ class GGUFGenerativeModel(BaseModel):
                 break
 
             new_token = self.detokenize([token]).decode('utf-8', errors='ignore')
+
+            # a little cleanup of 'think' tokens
+            if new_token == "<think>":
+                new_token = "<|think|>"
+                logger.info(f"GGUFGenerativeModel - stream -  changing token to markdown safe - {new_token}")
+
+            if new_token == "</think>":
+                new_token = "<|endthink|>"
 
             yield new_token
 
@@ -11115,6 +11106,7 @@ class GGUFGenerativeModel(BaseModel):
             #   will attempt to unpack logits - but catch any exceptions and skip
             if "logits" in output:
                 try:
+                    import ast
                     logits = ast.literal_eval(output["logits"])
                     output["logits"] = logits
                 except:
@@ -11131,19 +11123,9 @@ class GGUFGenerativeModel(BaseModel):
                     output["output_tokens"] = []
 
             # output = ast.literal_eval(output_raw.text)
-            """
-            output = json.loads(output_raw.text)
-            if "logits" in output:
-                logits = ast.literal_eval(output["logits"])
-                logger.debug(f"logits: {logits}")
-                output["logits"] = logits
-            if "output_tokens" in output:
-                ot_int = [int(x) for x in output["output_tokens"]]
-                output["output_tokens"] = ot_int
-            """
 
         except:
-            logger.warning("API inference was not successful")
+            logger.warning("GGUFGenerativeModel - function_call_over_api_endpoint - api inference was not successful")
             output = {"llm_response": "api-inference-error", "usage": {}}
 
         #   update linked to BaseModel
@@ -11188,6 +11170,7 @@ class GGUFGenerativeModel(BaseModel):
             #   will attempt to unpack logits - but catch any exceptions and skip
             if "logits" in output:
                 try:
+                    import ast
                     logits = ast.literal_eval(output["logits"])
                     output["logits"] = logits
                 except:
@@ -11196,6 +11179,7 @@ class GGUFGenerativeModel(BaseModel):
             #   will attempt to unpack output tokens - but catch any exceptions and skip
             if "output_tokens" in output:
                 try:
+                    import ast
                     # ot_int = [int(x) for x in output["output_tokens"]]
                     # output["output_tokens"] = ot_int
                     output_tokens = ast.literal_eval(output["output_tokens"])
@@ -11204,7 +11188,7 @@ class GGUFGenerativeModel(BaseModel):
                     output["output_tokens"] = []
 
         except:
-            logger.warning("API inference was not successful")
+            logger.warning("warning: api inference was not successful")
             output = {"llm_response": "api-inference-error", "usage": {}}
 
         #   update linked to BaseModel
@@ -11933,330 +11917,6 @@ class ModelResources:
         """ Returns the instantiated model that is already loaded in memory. """
 
         return getattr(cls._ModelState, model_name)
-
-
-class LLMWareInferenceServer:
-
-    """ LLMWare Inference Server class implements server-side lightweight inference server with two
-    primary APIs currently supported:
-
-        1.  /      - main inference of general purpose LLM deployed on inference server at time of start.
-        2.  /agent - supports agent process over API with multiple SLIM models deployed.
-
-    """
-
-    def __init__(self, model_name, model_catalog=None, hf_api_key=None, secret_api_key=None, home_path=None,
-                 port=8080, verbose=True, temperature=0.0, sample=False, max_output=100, debug=False):
-
-        self.HOME_PATH = home_path
-        self.hf_api_key = hf_api_key
-        self.current_api_key = secret_api_key
-        self.port = port
-
-        if not model_catalog:
-            self.model_catalog = ModelCatalog()
-        else:
-            self.model_catalog = model_catalog
-
-        self.model_name = model_name
-        self.model = self.model_catalog.load_model(model_name, api_key=self.hf_api_key,
-                                                   temperature=temperature, sample=sample, max_output=max_output)
-
-        self.verbose = verbose
-
-        import logging
-        logging.basicConfig(level=30)
-        global inference_server_logger
-        inference_server_logger = logging.getLogger("inference_server_logger")
-
-        if debug:
-            inference_server_logger.setLevel(level=10)
-        else:
-            if self.verbose:
-                # set logging at "INFO"
-                inference_server_logger.setLevel(level=20)
-            else:
-                # keep logging at "WARNING"
-                inference_server_logger.setLevel(level=30)
-
-    def start(self):
-
-        """ Starts the server runtime. """
-        # if inference server started, then try to get flask dependency
-        try:
-            global flask
-            from flask import Flask, request, jsonify
-        except:
-            raise DependencyNotInstalledException("flask")
-
-        app = Flask(__name__, template_folder=self.HOME_PATH, static_folder=self.HOME_PATH)
-        app.add_url_rule("/", methods=['GET', 'POST'], view_func=self.index_route)
-        app.add_url_rule("/agent", methods=['GET','POST'], view_func=self.agent_route)
-
-        #TODO:  WIP - explicit /load_model path not fully implemented yet
-        app.add_url_rule("/load_model", methods=['GET','POST'], view_func=self.load_model_route)
-
-        app.config.update(
-            TESTING=True,
-            # note: this is not a real secret key - it is just random letters
-            SECRET_KEY='asdasdsaddfdsggsdfdsfsdggdsd',
-            SEND_FILE_MAX_AGE_DEFAULT=0,
-            MAX_CONTENT_LENGTH=1000 * 1024 * 1024
-        )
-
-        # launch server
-        my_host = '0.0.0.0'
-        my_port = self.port
-        app.run(host=my_host, port=my_port)
-
-    def _llmware_inference(self, prompt, context, model_name):
-
-        """ Executes a LLM model inference from the main index route. """
-
-        t1 = time.time()
-
-        if not ModelResources().check_if_model_loaded(model_name):
-            self._load_model(model_name, get_logits=False, sample=False,temperature=0.0, max_output=200)
-
-        model = ModelResources().fetch_model(model_name)
-
-        output = model.inference(prompt, add_context=context, add_prompt_engineering=True)
-
-        if "logits" in output:
-            output["logits"] = str(output["logits"])
-
-        t2 = time.time()
-
-        inference_server_logger.info(f"update: model inference output - {output['llm_response']} - {output['usage']}")
-        inference_server_logger.info(f"update: total processing time: {t2-t1}")
-
-        return output
-
-    def index_route(self):
-
-        """ Main index route to execute a model inference from the server. """
-
-        # defaults
-        api_key = ""
-        question = ""
-        context = ""
-        model_name = ""
-
-        # if inference server started, then try to get flask dependency
-        try:
-            from flask import Flask, request, jsonify
-        except:
-            raise DependencyNotInstalledException("flask")
-
-        for keys in request.form:
-
-            inference_server_logger.debug(f"update: keys / values input received - {keys} - {request.form.get(keys)}")
-
-            if keys == "context":
-                context = request.form.get(keys)
-
-            if keys == "question":
-                question = request.form.get(keys)
-
-            if keys == "max_output_tokens":
-                max_output_len = request.form.get(keys)
-                try:
-                    max_output_len = int(max_output_len)
-                except:
-                    max_output_len = 200
-
-            if keys == "api_key":
-                api_key = request.form.get(keys)
-
-            if keys == "model_name":
-                model_name = request.form.get(keys)
-
-        t1 = time.time()
-
-        if not question and not context:
-            output_str = "Got your message - No content found to process"
-            return jsonify({"message": output_str})
-
-        if api_key != self.current_api_key:
-            output_str = "Got your message - Thanks for testing - API key not confirmed!"
-            return jsonify({"message": output_str})
-
-        if not model_name:
-            model_name = self.model_name
-        # start processing here
-
-        output = self._llmware_inference(question, context, model_name)
-
-        # cuda.empty_cache()
-
-        return jsonify(output)
-
-    def agent_route(self):
-
-        """ New InferenceServer API Route - to handle an Agent process deployed over a Remote Endpoint server. """
-
-        try:
-            from flask import Flask, request, jsonify
-        except:
-            raise DependencyNotInstalledException("flask")
-
-        context = ""
-        fx = ""
-        model = ""
-        params = []
-        get_logits = False
-        prompt = ""
-        temperature = 0.0
-        sample = False
-        api_key = ""
-        max_output = 50
-        tool_type = ""
-
-        for keys in request.form:
-
-            inference_server_logger.debug(f"update: keys / values input received: {keys} - {request.form.get(keys)}")
-
-            if keys == "context":
-                context = request.form.get(keys)
-
-            if keys == "tool_type":
-                tool_type = request.form.get(keys)
-
-            if keys == "function":
-                fx = request.form.get(keys)
-
-            if keys == "model" or keys == "model_name":
-                model = request.form.get(keys)
-
-            if keys == "params":
-                params = request.form.get(keys)
-
-            if keys == "get_logits":
-
-                get_logits = request.form.get(keys)
-
-                if get_logits in ["False", "false"]:
-                    get_logits = False
-                if get_logits in ["True", "true"]:
-                    get_logits =True
-
-            if keys == "temperature":
-                temperature = request.form.get(keys)
-
-            if keys == "sample":
-                sample = request.form.get(keys)
-
-            if keys == "question" or keys == "prompt":
-                prompt = request.form.get(keys)
-
-            if keys == "max_output_tokens" or keys == "max_output":
-                max_output_len = request.form.get(keys)
-                try:
-                    max_output = int(max_output_len)
-                except:
-                    max_output = 200
-
-            if keys == "api_key":
-                api_key = request.form.get(keys)
-
-        t1 = time.time()
-
-        if not context and not (fx or model):
-            output_str = "Got your message - No content found to process"
-            return jsonify({"message": output_str})
-
-        if api_key != self.current_api_key:
-            output_str = "Got your message - Thanks for testing - API key not confirmed!"
-            return jsonify({"message": output_str})
-
-        # start processing here
-
-        output = self._llmware_agent_function_call(context=context, tool_type=tool_type, model_name=model, function=fx,
-                                                  temperature=temperature, sample=sample,params=params,
-                                                  max_output=max_output, prompt=prompt,get_logits=get_logits)
-        # cuda.empty_cache()
-
-        return jsonify(output)
-
-    def _llmware_agent_function_call(self, prompt=None, context=None, tool_type=None, model_name=None,
-                                    function=None, temperature=0.0, sample=False, params=None,
-                                    max_output=50, get_logits=False):
-
-        """ Executes the function call inside the agent route. """
-
-        if tool_type:
-            model_name = _ModelRegistry().get_llm_fx_mapping()[tool_type]
-
-        temperature = float(temperature)
-        max_output = int(max_output)
-
-        inference_server_logger.debug(f"update: llmware_agent_function_call - {model_name} - {tool_type}")
-
-        if not ModelResources().check_if_model_loaded(model_name):
-            self._load_model(model_name, get_logits=True,sample=False,temperature=0.0,max_output=max_output)
-
-        model = ModelResources().fetch_model(model_name)
-
-        if tool_type not in ["sql", "answer"]:
-            # fc = getattr(model, "function_call")
-            output = model.function_call(context,function=function,params=[params], get_logits=get_logits,
-                                         max_output=max_output, temperature=temperature)
-        else:
-            # inference = getattr(model, "inference")
-            output = model.inference(prompt,add_context=context,add_prompt_engineering="default_with_context",
-                                     get_logits=get_logits)
-
-        inference_server_logger.info(f"update: llmware_agent_function_call - model_response - {output['llm_response']} "
-                                     f"- {output['usage']}")
-
-        if "logits" in output:
-            output["logits"] = str(output["logits"])
-
-        return output
-
-    def load_model_route(self):
-
-        """ Load Model route is an explicit step to load a model into the server persistent state -
-        not fully implemented yet - WIP. """
-
-        output = {}
-        model_name = ""
-        tool = ""
-
-        # if inference server started, then try to get flask dependency
-        try:
-            from flask import Flask, request, jsonify
-        except:
-            raise DependencyNotInstalledException("flask")
-
-        for keys in request.form:
-
-            inference_server_logger.debug(f"update: keys / values input received - {keys} - {request.form.get(keys)}")
-
-            if keys == "model" or keys == "model_name":
-                model_name = request.form.get(keys)
-
-            if keys == "tool" or keys == "tool_type":
-                tool = request.form.get(keys)
-
-        if tool and not model_name:
-            model_name = _ModelRegistry().get_llm_fx_mapping()[tool]
-
-        if model_name:
-            self._load_model(model_name)
-            output = {"model": f"loaded-{model_name}"}
-
-        return jsonify(output)
-
-    def _load_model(self, model_name, sample=False, temperature=0.0, get_logits=False,max_output=200):
-
-        if not ModelResources().check_if_model_loaded(model_name):
-            ModelResources().load_model(model_name, sample=sample, temperature=temperature, get_logits=get_logits,
-                                        max_output=max_output)
-        else:
-            inference_server_logger.debug(f"model already loaded - {model_name}")
-
-        return True
 
 
 class MultiModalModel:
@@ -15001,3 +14661,1563 @@ class OVEmbeddingModel(BaseModel):
 
         return all_scores
 
+
+class GGUFVisionGenerativeModel(BaseModel):
+
+    """ Implementation of GGUF Vision Model class - instantiate and run vision-to-text inferences using
+    GGUF llama.cpp models with MTMD CLIP-based visual encoding - wraps two underlying models (which interact
+    directly with each other) -
+
+        -- decoder generative model, e.g., llama main
+        -- encoder clip model, e.g., mtmd clip model
+
+    """
+
+    def __init__(self, model_name=None, model_card=None, api_key=None, prompt_wrapper=None, instruction_following=False,
+                 context_window=2048, use_gpu_if_available=True, get_logits=False,
+                 sample=True, max_output=500, temperature=0.0, api_endpoint=None, **kwargs):
+
+        super().__init__(**kwargs)
+
+        logger.debug("GGUFVisionGenerativeModel - initializing GGUF Vision model ... ")
+
+        self.model_class = "GGUFVisionGenerativeModel"
+        self.model_category = "generative"
+
+        # key model state attributes
+        self.gguf_file = None
+        self.gguf_repo = None
+        self.clip_file = None
+        self.clip_model = None
+
+        # main llama model
+        self._lib = None
+        self._model = None
+        self._ctx = None
+        self._batch = None
+        self.model_path = None
+        self.model_params = None
+        self.context_params = None
+
+        # attributes of mtmd backend lib and clip model
+        self._libmtmd = None
+        self.mtmd_ctx = None
+        self._clip_model = None
+
+        self.clip_ctx = None
+        self.clip_model_path = ""
+        self.clip_base_name = "mtmd"
+        self._clip_base_path = ""
+
+        self.llm_response = None
+        self.usage = None
+        self.logits = None
+        self.output_tokens = None
+        self.prompt = None
+        self.final_prompt = None
+        self._logits_all = False
+
+        #   set verbose level in environ level - will be picked up by callback in llama_cpp & mtmd
+        #   set to "ON" to view details for debugging
+        os.environ["llama_cpp_verbose"] = GGUFConfigs().get_config("llama_cpp_verbose")
+        #   e.g., os.environ["llama_cpp_verbose"] = "ON"
+
+        self.use_sampling = sample
+        self.get_logits = get_logits
+        self.logits_record = []
+        self.output_tokens = []
+        self.top_logit_count = 10
+        self.auto_remediate_function_call_output = True
+
+        #   default safety check in GGUF Configs that can be adjusted
+        gguf_configs_max = GGUFConfigs().get_config("max_output_tokens")
+
+        if max_output > gguf_configs_max:
+            # truncate max output to GGUFConfigs max
+            logger.warning(
+                f"GGUFVisionGenerativeModel - requested output len - {max_output} > {gguf_configs_max}, which is the "
+                f"current GGUF default max.\n--Truncating to {gguf_configs_max} output tokens.\n--Note: "
+                f"to change GGUF default max to new integer amount, say 500:\n "
+                f"  GGUFConfigs().set_config(\"max_output_tokens\", 500)"
+                )
+
+            max_output = gguf_configs_max
+
+        self.max_output = max_output
+        self.n_seq_max = max_output
+
+        self.target_requested_output_tokens = self.n_seq_max
+        self.max_total_len = 2048
+        self.max_input_len = int(0.5 * context_window)
+        self.llm_max_output_len = int(0.5 * context_window)
+        self.max_output_len = self.n_seq_max
+        self.model_name = model_name
+        self.prompt_wrapper = prompt_wrapper
+        self.instruction_following = instruction_following
+        self.trailing_space = ""
+        self.separator = "\n"
+        self.eos_token_id = 0
+        self.add_prompt_engineering = False
+        self.add_context = ""
+        self.model_type = "gguf"
+        self.model_card = model_card
+        self.primary_keys = None
+        self.function = None
+        self.hf_tokenizer_name = None
+        self.fc_supported = False
+
+        if model_card:
+
+            if "primary_keys" in model_card:
+                self.primary_keys = model_card["primary_keys"]
+
+            if "function" in model_card:
+                self.function = model_card["function"]
+
+            if "tokenizer" in model_card:
+                self.hf_tokenizer_name = model_card["tokenizer"]
+
+            if "function_call" in model_card:
+                self.fc_supported = model_card["function_call"]
+
+            if "trailing_space" in model_card:
+                self.trailing_space = model_card["trailing_space"]
+            else:
+                self.trailing_space = ""
+
+            if "eos_token_id" in model_card:
+                self.eos_token_id = model_card["eos_token_id"]
+
+            if "context_window" in model_card:
+                self.max_total_len = model_card["context_window"]
+
+            if "prompt_wrapper" in model_card:
+                self.prompt_wrapper = model_card["prompt_wrapper"]
+            else:
+                self.prompt_wrapper = "human_bot"
+
+            if "gguf_file" in model_card:
+                self.gguf_file = model_card["gguf_file"]  # e.g., "ggml-model-q4_k_m.gguf"
+
+            if "clip_file" in model_card:
+                self.clip_file = model_card["clip_file"]
+
+            if "gguf_repo" in model_card:
+                self.gguf_repo = model_card["gguf_repo"]  # e.g., "llmware/dragon-mistral-7b-v0-gguf"
+
+            if "instruction_following" in model_card:
+                self.instruction_following = model_card["instruction_following"]
+
+        #   temperature configuration
+
+        # if temperature set at time of loading the model, then use that setting
+        if temperature != -99:
+            self.temperature = temperature
+        elif "temperature" in model_card:
+            # if not set, then pull the default temperature from the model card
+            self.temperature = model_card["temperature"]
+        else:
+            # if no guidance from model loading or model card, then set at GGUFConfigs default
+            self.temperature = GGUFConfigs().get_config("temperature_default")
+
+        #   new option to 'force' use of cuda lib, and over-ride safety checks
+        if GGUFConfigs().get_config("force_gpu"):
+            self.use_gpu = True
+        else:
+            if sys.platform.lower() not in GGUFConfigs().get_config("cuda_platforms"):
+                self.use_gpu = False
+            else:
+                # min drivers set to the lowest level for CUDA 12.1 on Linux
+                min_drivers = [525, 60]
+                if sys.platform.lower() == "win32":
+                    min_drivers = GGUFConfigs().get_config("cuda_windows_driver_min")
+
+                gpu_available = ModelCatalog().gpu_available(driver_min_levels=min_drivers)
+
+                #   use_gpu set to TRUE only if:
+                #   (1) cuda_platform (e.g., linux or win32), e.g., not set on Mac OS
+                #   (2) use_gpu set to True in GGUFConfigs
+                #   (3) use_gpu_if_available flag set to True (by default)
+                #   (4) cuda found and drivers current via direct polling of nvidia-smi executable in
+                #   ModelCatalog.gpu_available method
+
+                self.use_gpu = (GGUFConfigs().get_config("use_gpu")
+                                and sys.platform.lower() in GGUFConfigs().get_config("cuda_platforms")
+                                and gpu_available["drivers_current"] and gpu_available["gpu_found"]
+                                and use_gpu_if_available)
+
+        # set default minimum
+        self.n_batch = 2048 # alt/previous: 512
+        self.last_n_tokens_size = 64
+        self._n_vocab = None
+        self._n_ctx = None
+        self._token_nl = None
+        self._token_eos = None
+        self._candidates = None
+        self.input_ids = None
+        self.scores = None
+        self.n_tokens = 0
+        self.prev = []
+        self.grammar = None
+
+        for key, value in GGUFConfigs().get_sampling_params().items():
+            setattr(self, key, value)
+
+        # no api key expected or required
+        self.api_key = api_key
+        self.api_endpoint = api_endpoint
+        self.error_message = "\nUnable to identify and load GGUF Vision Generative model."
+        self.prompt = ""
+        self.context = ""
+        self.tool_type = None
+        self.model_repo_path = None
+        self._sampler = None
+        self._last_image_embed = None
+        self._last_image_hash = None
+        self.file_path = ""
+        self.vocab = None
+
+        # not implemented currently keeps list of tuples - (file_path, embed)
+        # roadmap - capture image embeddings separately for re-use
+        self.embed_list = []
+        self.embed_tokens = []
+
+        self.verbose = True
+
+        self.post_init()
+
+    def load_model_for_inference(self, model_repo_path, model_card=None, **kwargs):
+
+        """ Loads and instantiates model along with other required objects. """
+
+        # needs to load both llama + clip models
+
+        if model_card:
+            self.model_card = model_card
+
+        #   validate before loading
+        self.validate()
+
+        # load llama model
+        response = self._load_llama_model_for_inference(model_repo_path, model_card, **kwargs)
+        if not response:
+            logger.warning(f"GGUFVisionGenerativeModel - error loading llama backend model.")
+            # further triage and debug info steps ...
+            pass
+
+        # load clip model
+        response = self._load_clip_model_for_inference(model_repo_path, model_card, **kwargs)
+        if not response:
+            logger.warning(f"GGUFVisionGenerativeModel - error loading mtmd clip backend model.")
+            # further triage and debug info steps ...
+            pass
+
+        return self
+
+    def _load_clip_model_for_inference(self, model_repo_path, model_card=None, **kwargs):
+
+        """ Loads backend MTMD module along with instantiating CLIP Model and prepares associated context """
+
+        # load shared library
+        self._libmtmd = self.load_mtmd_shared_library()
+        self._libmtmd = add_libmtmd_ctypes_declarations(self._libmtmd)
+
+        # set up log (best effort) - catch and skip if any errors thrown
+
+        try:
+            self._libmtmd.mtmd_helper_log_set(mtmd_log_callback, ctypes.c_void_p(0))
+        except:
+            logger.info(f"GGUFVisionGenerativeModel - unable to set mtmd log")
+
+        ctx_params = self._libmtmd.mtmd_context_params_default()
+        ctx_params.use_gpu = True
+        ctx_params.print_timings = 0 # self.verbose
+
+        import multiprocessing
+        ctx_params.n_threads = max(multiprocessing.cpu_count() // 2, 1)
+
+        # deprecated
+        # ctx_params.verbosity = 0 # 2 if self.verbose else 0  # GGML_LOG_LEVEL_INFO = 2
+
+        if not self.clip_file:
+            self.clip_file = "mmproj-F16.gguf"
+
+        self.clip_model_path = os.path.join(model_repo_path, self.clip_file)
+
+        # Initialize mtmd context
+
+        self.mtmd_ctx = self._libmtmd.mtmd_init_from_file(self.clip_model_path.encode(),
+                                                          self._model.model, ctx_params)
+
+        if self.mtmd_ctx is None:
+            raise ValueError(f"Failed to load mtmd context from: {self.clip_model_path}")
+
+        # Check if vision is supported
+        if self._libmtmd.mtmd_support_vision(self.mtmd_ctx):
+
+            logger.info(f"GGUFVisionGenerativeModel - confirmed that model supports vision")
+        else:
+            logger.info(f"GGUFVisionGenerativeModel - model does not support vision - expect errors likely")
+
+        return True
+
+    def _load_llama_model_for_inference(self, model_repo_path, model_card=None, **kwargs):
+
+        """ Loads Llama model and sets context parameters """
+
+        # load shared library
+        self._lib = self._load_llama_cpp_shared_library()
+        self._lib = add_ctypes_declarations(self._lib)
+
+        if not GGUFConfigs().get_config("backend_initialized"):
+            # is this backend init required?
+            self._lib.llama_backend_init()
+            GGUFConfigs().set_config("backend_initialized", True)
+
+        self._lib.llama_log_set(llama_log_callback, ctypes.c_void_p(0))
+
+        self.model_params = self._lib.llama_model_default_params()
+
+        # update model params parameters
+        self.model_params.n_gpu_layers = 50
+
+        self.model_params.main_gpu = 0
+        self.model_params.vocab_only = False
+        self.model_params.use_mmap = True
+        self.model_params.use_mlock = False
+
+        if self.use_gpu:
+            # on darwin, keep at 0 - on win32 and linux - set to 50 by default (e.g., shift all model layers to GPU)
+            if sys.platform.lower() == "win32" or sys.platform.lower().startswith("linux"):
+                self.model_params.n_gpu_layers = GGUFConfigs().get_config("n_gpu_layers")
+
+        # update context parameters
+        self.context_params = self._lib.llama_context_default_params()
+
+        #   sets minimum of 2048, but will extend if context_window is larger (e.g., 4096/8192+)
+        # self.context_params.n_ctx = max(2048, self.max_total_len)
+        self.context_params.n_ctx = 8192  # 2048
+        self.context_params.n_batch = self.n_batch
+
+        n_ubatch = 512
+        self.context_params.n_ubatch = min(self.n_batch, n_ubatch)
+
+        # note: handcrafting of thread allocation can sometimes help performance substantially
+        import multiprocessing
+        self.context_params.n_threads = max(multiprocessing.cpu_count() // 2, 1)
+        self.context_params.n_threads_batch = multiprocessing.cpu_count()
+
+        # self.context_params.rope_scaling_type = (LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED)
+        # self.context_params.pooling_type = LLAMA_POOLING_TYPE_UNSPECIFIED
+        self.context_params.rope_freq_base = 0.0  # (rope_freq_base if rope_freq_base != 0.0 else 0)
+        self.context_params.type_k = 1
+        self.context_params.type_v = 1
+        self.context_params.offload_kqv = True
+        self.context_params.yarn_orig_ctx = 0
+
+        if model_card:
+            self.model_name = model_card["model_name"].split("/")[-1]
+            self.gguf_file = model_card["gguf_file"]  # e.g., "ggml-model-q4_k_m.gguf",
+            self.gguf_repo = model_card["gguf_repo"]  # e.g., "llmware/dragon-mistral-7b-v0-gguf"
+
+        self.model_path = os.path.join(model_repo_path, self.gguf_file)
+
+        #   loads and instantiates the key objects
+        self._model = _LlamaModel(self._lib, path_model=self.model_path, params=self.model_params)
+        self._ctx = _LlamaContext(self._lib, model=self._model, params=self.context_params)
+        self._batch = _LlamaBatch(self._lib, n_tokens=self.n_batch, embd=0, n_seq_max=self.context_params.n_ctx)
+
+        self.vocab = self._lib.llama_model_get_vocab(self._model.model)
+        self._n_vocab = self.n_vocab()
+        self._n_ctx = self.n_ctx()
+        self._token_nl = self.token_nl()
+        self._token_eos = self.token_eos()
+        self._candidates = _LlamaTokenDataArray(n_vocab=self._n_vocab)
+        self.input_ids = np.ndarray((self._n_ctx,), dtype=np.intc)
+        self.scores = np.ndarray((self._n_ctx, self._n_vocab), dtype=np.single)
+
+        self._sampler = self._init_sampler()
+
+        return True
+
+    def _load_llama_cpp_shared_library(self):
+
+        """ Loads llama_cpp shared library - checks if a custom lib path has been configured - otherwise,
+        it loads the llmware provided dynamic libraries based on the platform/system. """
+
+        # check first if custom_lib_path - expected to be full path to custom so/dylib file
+        custom_path = GGUFConfigs().get_config("custom_lib_path")
+        cdll_args = dict()
+
+        # add option to fall_back if CUDA driver can not be loaded correctly to CPU driver for that OS
+        fall_back_option = ""
+
+        if custom_path:
+
+            # point to custom llama.cpp backend libs
+
+            if os.path.exists(custom_path):
+                _lib_paths = [custom_path]
+            else:
+                raise LLMWareException(message="ModuleNotFound error: could not find location of custom lib")
+
+        else:
+
+            _base_path = os.path.join(LLMWareConfig.get_config("shared_lib_path"), "gguf")
+
+            _lib_paths = []
+
+            system_platform = sys.platform.lower()
+
+            # Determine the file extension based on the platform
+            if system_platform.startswith("linux"):
+
+                # two linux versions supported - linux_x86 and linux_cuda
+
+                if self.use_gpu:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("linux_cuda_lib"),
+                                                   GGUFConfigs().get_config("linux_cuda")))
+
+                    # will try to use x86 as fallback
+                    fall_back_option = os.path.join(_base_path, GGUFConfigs().get_config("linux_x86_lib"),
+                                                    GGUFConfigs().get_config("linux_x86"))
+
+                else:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("linux_x86_lib"),
+                                                   GGUFConfigs().get_config("linux_x86")))
+
+            elif system_platform == "darwin":
+
+                # as of v0.4.0, only support Mac OS with Metal/Accelerate framework
+
+                machine = os.uname().machine.lower()
+
+                # check for older MacOS versions and give warning
+
+                try:
+                    import platform
+                    macos_ver = platform.mac_ver()
+                    if len(macos_ver) > 0:
+                        ver = macos_ver[0].split(".")
+
+                        v1 = int(ver[0])
+                        v2 = int(ver[1])
+
+                        if v1 < 14:
+                            logger.warning(f"Detected older version of macos - {macos_ver} - "
+                                           f"which may produce errors related to the Accelerate framework.\n"
+                                           f"To remove this warning: upgrade to Sonoma (>14.0)")
+                except:
+                    pass
+
+                _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("mac_metal_lib"),
+                                               GGUFConfigs().get_config("mac_metal")))
+
+            elif sys.platform == "win32":
+
+                import platform
+                if platform.machine().lower() == "arm64":
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_arm64_lib"),
+                                                   GGUFConfigs().get_config("windows_arm64")))
+
+                # windows cuda
+                elif self.use_gpu:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_cuda_lib"),
+                                                   GGUFConfigs().get_config("windows_cuda")))
+
+                    # new - will try to use x86 as fallback
+                    fall_back_option = os.path.join(_base_path, GGUFConfigs().get_config("windows_x86_lib"),
+                                                    GGUFConfigs().get_config("windows"))
+
+                else:
+                    # main case - windows x86
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_x86_lib"),
+                                                   GGUFConfigs().get_config("windows")))
+
+            else:
+                raise LLMWareException(message=f"No matching llama.cpp binary for platform - {system_platform}")
+
+            # Add the library directory to the DLL search path on Windows (if needed)
+            if sys.platform == "win32" and sys.version_info >= (3, 8):
+                os.add_dll_directory(str(_base_path))
+
+                # need to review
+                if "CUDA_PATH" in os.environ:
+                    os.add_dll_directory(os.path.join(os.environ["CUDA_PATH"], "bin"))
+                    os.add_dll_directory(os.path.join(os.environ["CUDA_PATH"], "lib"))
+
+                cdll_args["winmode"] = ctypes.RTLD_GLOBAL
+
+        # Try to load the shared library, handling potential errors
+        for _lib_path in _lib_paths:
+
+            logger.debug(f"Loading llama cpp backend - {_lib_path}")
+
+            if not os.path.exists(_lib_path):
+                if fall_back_option:
+                    _lib_path = fall_back_option
+
+            if os.path.exists(_lib_path):
+
+                try:
+                    return ctypes.cdll.LoadLibrary(str(_lib_path))
+                except Exception as e:
+
+                    #  if fail, and CUDA selected, then try to fall back to matching CPU version
+                    if fall_back_option:
+                        try:
+
+                            logger.warning("Not successful loading preferred lib so reverting to fallback lib.")
+
+                            return ctypes.cdll.LoadLibrary(str(_lib_path))
+                        except:
+
+                            # if fall-back fails
+                            raise GGUFLibNotLoadedException("llama_cpp_backend",
+                                                            sys.platform.lower(),
+                                                            self.use_gpu,
+                                                            _lib_path,
+                                                            custom_path)
+                    else:
+                        raise GGUFLibNotLoadedException("llama_cpp_backend" ,sys.platform.lower(),
+                                                        self.use_gpu, _lib_path, custom_path)
+
+        # if not loaded
+        raise LLMWareException(message=f"GGUFGenerativeModel - attempting to load llama cpp backend lib - "
+                                       f"Llama cpp backend not found.")
+
+    def _init_mtmd_context(self, llama_model):
+
+        """Initialize mtmd context with the llama model."""
+
+        self.mtmd_ctx = None
+
+        # Get default parameters
+        ctx_params = self._libmtmd.mtmd_context_params_default()
+        ctx_params.use_gpu = True  # todo: expose as configuration option directly
+        ctx_params.print_timings = self.verbose
+        ctx_params.n_threads = max(multiprocessing.cpu_count() // 2, 1)
+
+        # deprecated/removing
+        # ctx_params.verbosity = 2 if self.verbose else 0  # GGML_LOG_LEVEL_INFO = 2
+
+        # Initialize mtmd context
+        self.mtmd_ctx = self._libmtmd.mtmd_init_from_file(self.clip_model_path.encode(),
+                                                          llama_model.model,
+                                                          ctx_params)
+
+        if self.mtmd_ctx is None:
+            raise ValueError(f"Failed to load mtmd context from: {self.clip_model_path}")
+
+        # Check if vision is supported
+        if not self._libmtmd.mtmd_support_vision(self.mtmd_ctx):
+            raise ValueError("Vision is not supported by this model")
+
+        return True
+
+    def mtmd_free(self):
+
+        """ Deletes MTMD context """
+
+        if self.mtmd_ctx is not None:
+            self._mtmd_cpp.mtmd_free(self.mtmd_ctx)
+            self.mtmd_ctx = None
+
+        return True
+
+    def load_mtmd_shared_library(self):
+
+        """Platform independent shared library loader for mtmd lib backend """
+
+        # providing several backends packaged within llmware for the following:
+
+        # "windows_mtmd": "mtmd.dll",
+        # "mac_metal_mtmd": "libmtmd.dylib",
+        # "linux_x86_mtmd": "libmtmd.so",
+        # "linux_cuda_mtmd": "libmtmd.so",
+        # "windows_arm64_mtmd": "mtmd.dll",
+        # "windows_cuda_mtmd": "mtmd.dll",
+
+        # check first if custom_lib_path - expected to be full path to custom so/dylib file
+        custom_path = GGUFConfigs().get_config("custom_lib_path")
+        cdll_args = dict()
+
+        fall_back_option = ""
+
+        if custom_path:
+
+            if os.path.exists(custom_path):
+                _lib_paths = [custom_path]
+            else:
+                raise LLMWareException(message="ModuleNotFound error: could not find location of custom lib")
+
+        else:
+
+            _base_path = os.path.join(LLMWareConfig.get_config("shared_lib_path"), "gguf")
+
+            _lib_paths = []
+
+            system_platform = sys.platform.lower()
+
+            # Determine the file extension based on the platform
+            if system_platform.startswith("linux"):
+
+                # two linux versions supported - linux_x86 and linux_cuda
+
+                if self.use_gpu:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("linux_cuda_lib"),
+                                                   GGUFConfigs().get_config("linux_cuda_mtmd")))
+
+                    # will try to use x86 as fallback
+                    fall_back_option = os.path.join(_base_path, GGUFConfigs().get_config("linux_x86_lib"),
+                                                    GGUFConfigs().get_config("linux_x86_mtmd"))
+
+                else:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("linux_x86_lib"),
+                                                   GGUFConfigs().get_config("linux_x86_mtmd")))
+
+            elif system_platform == "darwin":
+
+                # as of v0.4.0, only support Mac OS with Metal/Accelerate framework
+
+                machine = os.uname().machine.lower()
+
+                # check for older MacOS versions and give warning
+
+                try:
+                    import platform
+                    macos_ver = platform.mac_ver()
+                    if len(macos_ver) > 0:
+                        ver = macos_ver[0].split(".")
+
+                        v1 = int(ver[0])
+                        v2 = int(ver[1])
+
+                        if v1 < 14:
+                            logger.warning(f"Detected older version of macos - {macos_ver} - "
+                                           f"which may produce errors related to the Accelerate framework.\n"
+                                           f"To remove this warning: upgrade to Sonoma (>14.0)")
+                except:
+                    pass
+
+                _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("mac_metal_lib"),
+                                               GGUFConfigs().get_config("mac_metal_mtmd")))
+
+            elif sys.platform == "win32":
+
+                import platform
+                if platform.machine().lower() == "arm64":
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_arm64_lib"),
+                                                   GGUFConfigs().get_config("windows_arm64_mtmd")))
+
+                # windows cuda
+                elif self.use_gpu:
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_cuda_lib"),
+                                                   GGUFConfigs().get_config("windows_cuda_mtmd")))
+
+                    # new - will try to use x86 as fallback
+                    fall_back_option = os.path.join(_base_path, GGUFConfigs().get_config("windows_x86_lib"),
+                                                    GGUFConfigs().get_config("windows_mtmd"))
+
+                else:
+                    # main case - windows x86
+                    _lib_paths.append(os.path.join(_base_path, GGUFConfigs().get_config("windows_x86_lib"),
+                                                   GGUFConfigs().get_config("windows_mtmd")))
+
+            else:
+                raise LLMWareException(message=f"No matching mtmd binary for platform - {system_platform}")
+
+            # Add the library directory to the DLL search path on Windows (if needed)
+            if sys.platform == "win32" and sys.version_info >= (3, 8):
+                os.add_dll_directory(str(_base_path))
+
+                # need to review
+                if "CUDA_PATH" in os.environ:
+                    os.add_dll_directory(os.path.join(os.environ["CUDA_PATH"], "bin"))
+                    os.add_dll_directory(os.path.join(os.environ["CUDA_PATH"], "lib"))
+
+                cdll_args["winmode"] = ctypes.RTLD_GLOBAL
+
+        # Try to load the shared library, handling potential errors
+        for _lib_path in _lib_paths:
+
+            logger.debug(f"Loading mtmd backend - {_lib_path}")
+
+            if not os.path.exists(_lib_path):
+                if fall_back_option:
+                    _lib_path = fall_back_option
+
+            if os.path.exists(_lib_path):
+
+                try:
+                    return ctypes.cdll.LoadLibrary(str(_lib_path))
+
+                except Exception as e:
+
+                    #  if fail, and CUDA selected, then try to fall back to matching CPU version
+                    if fall_back_option:
+
+                        try:
+
+                            logger.warning("Not successful loading preferred lib so reverting to fallback lib.")
+
+                            return ctypes.cdll.LoadLibrary(str(_lib_path))
+
+                        except:
+
+                            # if fall-back fails
+                            raise GGUFLibNotLoadedException("mtmd_backend",
+                                                            sys.platform.lower(),
+                                                            self.use_gpu,
+                                                            _lib_path,
+                                                            custom_path)
+                    else:
+                        raise GGUFLibNotLoadedException("mtmd_backend", sys.platform.lower(),
+                                                        self.use_gpu, _lib_path, custom_path)
+
+        # if not loaded
+        raise LLMWareException(message=f"GGUFVisionGenerativeModel - attempting to load mtmd backend lib - "
+                                       f"mtmd backend not found.")
+
+
+    def image_to_base64_data_uri(self, file_path):
+
+        """ Image handling utility """
+
+        import base64
+
+        with open(file_path, "rb") as img_file:
+            base64_data = base64.b64encode(img_file.read()).decode('utf-8')
+            return f"data:image/jpg;base64,{base64_data}"
+
+    def _create_bitmap_from_bytes(self, image_bytes: bytes):
+
+        """Create mtmd_bitmap from image bytes."""
+
+        if self.mtmd_ctx is None:
+            raise ValueError("mtmd context not initialized")
+
+        bitmap = self._libmtmd.mtmd_helper_bitmap_init_from_buf(
+            self.mtmd_ctx,
+            (ctypes.c_uint8 * len(image_bytes)).from_buffer(bytearray(image_bytes)),
+            len(image_bytes)
+        )
+
+        if bitmap is None:
+            raise ValueError("Failed to create bitmap from image bytes")
+
+        return bitmap
+
+    def prepare_image_prompt(self, prompt, image_path):
+
+        """ Main entry point for building image encodings and merging with token encodings to prepare
+        prompt for generative decoder model """
+
+        data_uri = self.image_to_base64_data_uri(image_path)
+        import base64
+        image_bytes = base64.b64decode(data_uri.split(",")[1])
+
+        bitmap = self._create_bitmap_from_bytes(image_bytes)
+
+        bitmaps = []
+        bitmap_cleanup = []
+        bitmaps.append(bitmap)
+        bitmap_cleanup.append(bitmap)
+
+        # Create input text structure
+        input_text = mtmd_input_text()
+        input_text.text = prompt.encode('utf-8')
+        input_text.add_special = True
+        input_text.parse_special = True
+
+        # Create input chunks
+        chunks = self._libmtmd.mtmd_input_chunks_init()
+        if chunks is None:
+            raise ValueError("Failed to create input chunks")
+
+        bitmap_array = (mtmd_bitmap_p_ctypes * len(bitmaps))(*bitmaps)
+
+        result = self._libmtmd.mtmd_tokenize(
+            self.mtmd_ctx,
+            chunks,
+            ctypes.byref(input_text),
+            bitmap_array,
+            len(bitmaps)
+        )
+
+        if result != 0:
+            raise ValueError(f"Failed to tokenize input: error code {result}")
+
+        # Reset llama context
+        self.reset()
+        memory = self._lib.llama_get_memory(self._ctx.ctx)
+        self._lib.llama_memory_clear(memory, True)
+
+        # Process each chunk
+        n_past = llama_pos(0)
+
+        n_chunks = self._libmtmd.mtmd_input_chunks_size(chunks)
+
+        for i in range(n_chunks):
+
+            chunk = self._libmtmd.mtmd_input_chunks_get(chunks, i)
+            if chunk is None:
+                continue
+
+            chunk_type = self._libmtmd.mtmd_input_chunk_get_type(chunk)
+
+            if chunk_type == MTMD_INPUT_CHUNK_TYPE_TEXT:
+                # Handle text chunk
+
+                n_tokens_out = ctypes.c_size_t()
+                tokens_ptr = self._libmtmd.mtmd_input_chunk_get_tokens_text(
+                    chunk, ctypes.byref(n_tokens_out)
+                )
+
+                if tokens_ptr and n_tokens_out.value > 0:
+                    # Convert ctypes array to Python list
+                    tokens = [tokens_ptr[j] for j in range(n_tokens_out.value)]
+
+                    if self.n_tokens + len(tokens) > self.n_ctx():
+                        raise ValueError(
+                            f"Prompt is larger than n_ctx: {self.n_tokens + len(tokens)} > {self.n_ctx()}"
+                        )
+
+                    self.eval(tokens)
+
+            elif chunk_type in [MTMD_INPUT_CHUNK_TYPE_IMAGE,
+                                MTMD_INPUT_CHUNK_TYPE_AUDIO]:
+
+                chunk_n_tokens = self._libmtmd.mtmd_input_chunk_get_n_tokens(chunk)
+
+                if self.n_tokens + chunk_n_tokens > self.n_ctx():
+                    raise ValueError(
+                        f"Prompt is larger than n_ctx: {self.n_tokens + chunk_n_tokens} > {self.n_ctx()}"
+                    )
+
+                new_n_past = llama_pos(0)
+
+                result = self._libmtmd.mtmd_helper_eval_chunk_single(
+                    self.mtmd_ctx,
+                    self._ctx.ctx,
+                    chunk,
+                    llama_pos(self.n_tokens),
+                    llama_seq_id(0),
+                    self.n_batch,
+                    False,  # logits_last
+                    ctypes.byref(new_n_past)
+                )
+
+                if result != 0:
+                    raise ValueError(f"Failed to evaluate chunk: error code {result}")
+
+                self.n_tokens = new_n_past.value
+
+            prompt = self.input_ids[: self.n_tokens].tolist()
+
+        self._libmtmd.mtmd_input_chunks_free(chunks)
+
+        state_size = self._lib.llama_state_get_size(self._ctx.ctx)
+
+        return prompt
+
+    def _init_sampler(self):
+
+        """ Initializes and sets up the llama cpp backend sampler """
+
+        # create sampler
+        # default params are struct
+        params = llama_sampler_chain_params()
+        self._sampler = self._lib.llama_sampler_chain_init(params)
+
+        temp = 0.0
+
+        # todo: expose more sampling options
+
+        if temp < 0.0:
+            # sampler.add_softmax()
+            self._lib.llama_sampler_chain_add(self._sampler, self._lib.llama_sampler_init_softmax())
+            # sampler.add_dist(self._seed)
+
+        elif temp == 0.0:
+            # sampler.add_greedy()
+            greedy_sampler = self._lib.llama_sampler_init_greedy()
+
+            self._lib.llama_sampler_chain_add(self._sampler, greedy_sampler)
+
+        return self._sampler
+
+    def _inference(self, prompt):
+
+        """ Tokenizes the prompt and executes generation loop. """
+
+        # self._sampler = self._init_sampler()
+
+        t0 = time.time()
+
+        completion_tokens = [] if len(prompt) > 0 else [self.token_bos()]
+
+        prompt_tokens = (
+            (
+                self.tokenize(prompt.encode("utf-8"), special=True)
+                if prompt != ""
+                else [self.token_bos()]
+            )
+            if isinstance(prompt, str)
+            else prompt
+        )
+
+        # confirm that input is smaller than context_window
+        input_len = len(prompt_tokens)
+        context_window = self.n_ctx()
+
+        if input_len > context_window:
+            logger.warning("GGUFCLIPGenerativeModel - input is too long for model context window - "
+                           "truncating")
+            min_output_len = 10
+            prompt_tokens = prompt_tokens[0:context_window - min_output_len]
+            input_len = len(prompt_tokens)
+
+        text = b""
+
+        # first token capture starts here
+        get_first_token_speed = GGUFConfigs().get_config("get_first_token_speed")
+
+        token_counter = 0
+        t_gen_start = time.time()
+        first_token_processing_time = -1.0
+
+        for token in self.generate(prompt_tokens):
+
+            # first token capture
+            if get_first_token_speed:
+                if token_counter == 0:
+                    first_token_processing_time = time.time() - t_gen_start
+                    token_counter += 1
+            # first token capture ends here
+
+            if self.get_logits:
+                self.register_top_logits()
+                self.output_tokens.append(token)
+
+            if token == self._token_eos:
+                text = self.detokenize(completion_tokens)
+                break
+
+            completion_tokens.append(token)
+
+            #   stop at max output len
+            if len(completion_tokens) >= self.max_output_len:
+                text = self.detokenize(completion_tokens)
+                break
+
+            #   stop if combined input + output at context window size
+            if (input_len + len(completion_tokens)) >= context_window:
+                text = self.detokenize(completion_tokens)
+                break
+
+        text_str = text.decode("utf-8", errors="ignore")
+
+        # post-processing clean-up - stop at endoftext
+        eot = text_str.find("<|endoftext|>")
+        if eot > -1:
+            text_str = text_str[:eot]
+
+        # new post-processing clean-up - stop at </s>
+        eots = text_str.find("</s>")
+        if eots > -1:
+            text_str = text_str[:eots]
+
+        # post-processing clean-up - start after bot wrapper
+        bot = text_str.find("<bot>:")
+        if bot > -1:
+            text_str = text_str[bot + len("<bot>:"):]
+
+        # new post-processing cleanup - skip repeating starting <s>
+        boss = text_str.find("<s>")
+        if boss > -1:
+            text_str = text_str[boss + len("<s>"):]
+
+        # end - post-processing
+
+        if get_first_token_speed:
+
+            output = {"llm_response": text_str,
+                      "usage": {"input": len(prompt_tokens), "output": len(completion_tokens),
+                                "total": len(prompt_tokens) + len(completion_tokens), "metric": "tokens",
+                                "processing_time": time.time() - t0,
+                                "first_token_processing_time": first_token_processing_time}}
+        else:
+            output = {"llm_response": text_str,
+                      "usage": {"input": len(prompt_tokens), "output": len(completion_tokens),
+                                "total": len(prompt_tokens) + len(completion_tokens), "metric": "tokens",
+                                "processing_time": time.time() - t0}}
+
+        if self.get_logits:
+            output.update({"logits": self.logits_record, "output_tokens": self.output_tokens})
+
+        return output
+
+    def sample_gguf(self, idx=None):
+
+        """ Adapted to sample_gguf to avoid potential name space conflicts. """
+
+        # assert self.n_tokens > 0
+
+        tmp_sampler = False
+
+        if self._sampler is None:
+            tmp_sampler = True
+            self._sampler = self._init_sampler()
+
+        ridx = idx - self.n_tokens if idx is not None else -1
+
+        assert self.ctx is not None
+
+        token = self._lib.llama_sampler_sample(self._sampler, self._ctx.ctx, ridx)
+
+        # token = int(self.logits_record[-1][0][0])
+
+        if tmp_sampler:
+            self._sampler = None
+
+        return token
+
+    def generate(self, tokens, reset=True):
+
+        """ Generator that samples the model and yields tokens until stopped. """
+
+        # test
+
+        # Check for kv cache prefix match
+        if reset and self.n_tokens > 0:
+            longest_prefix = 0
+            for a, b in zip(self._input_ids, tokens[:-1]):
+                if a == b:
+                    longest_prefix += 1
+                else:
+                    break
+            if longest_prefix > 0:
+                reset = False
+                tokens = tokens[longest_prefix:]
+                self.n_tokens = longest_prefix
+
+        # Reset the model state
+        # reset = False
+        if reset:
+            self.reset()
+
+        sample_idx = self.n_tokens + len(tokens) - 1
+        tokens = list(tokens)
+
+        tokens_created = 0
+        input_start_len = len(tokens)
+
+        memory = self._ctx.memory
+
+        # Eval and sample
+        while True:
+
+            self._lib.llama_memory_seq_rm(memory, -1, self.n_tokens, -1)
+
+            for i in range(0, len(tokens), self.n_batch):
+                batch = tokens[i: min(len(tokens), i + self.n_batch)]
+                n_past = self.n_tokens
+                n_tokens = len(batch)
+
+                self._batch.set_batch(batch=batch, n_past=n_past, logits_all=self._logits_all)
+
+                return_code = self._lib.llama_decode(self._ctx.ctx, self._batch.batch)
+
+                # TODO: add better error handling if return_code 1 - usually overflow of ctx
+                if return_code != 0:
+                    raise RuntimeError(f"llama_decode call returned {return_code} - in most cases, this "
+                                       f"is due to exceeding the maximum context window.")
+
+                self.input_ids[n_past: n_past + n_tokens] = batch
+                rows = n_tokens
+                cols = self._n_vocab
+                offset = (0 if self._logits_all else n_tokens - 1)
+
+                if self._logits_all:
+                    rows = n_tokens
+                    cols = self._n_vocab
+                    logits = np.ctypeslib.as_array(
+                        self._ctx.get_logits(), shape=(rows * cols,))
+                    self.scores[n_past: n_past + n_tokens, :].reshape(-1)[::] = logits
+
+                self.n_tokens += n_tokens
+
+                # leaving hard-coded off for now (improves performance)
+                # self.register_top_logits()
+
+            while sample_idx < self.n_tokens:
+
+                logits = self._scores[-1, :]
+
+                self.prev = list(self.eval_tokens)
+
+                # sample to generate token from logits
+                token = self.sample_gguf(idx=sample_idx)  # (logits_array=logits)
+
+                self.accept(id=id, apply_grammar=None)
+
+                tokens_created += 1
+
+                sample_idx += 1
+
+                tokens_or_none = yield token
+                tokens.clear()
+                tokens.append(token)
+                if tokens_or_none is not None:
+                    tokens.extend(tokens_or_none)
+
+                if sample_idx < self.n_tokens and token != self._input_ids[sample_idx]:
+                    self.n_tokens = sample_idx
+
+                    self._lib.llama_memory_seq_rm(self._lib.llama_get_memory(self._ctx.ctx), -1, self.n_tokens, -1)
+                    break
+
+                if tokens_created > self.max_output_len:
+                    logger.info("GGUFVisionGenerativeModel - stopping generation loop - reached limit of "
+                                "max output len")
+                    break
+
+    def tokenize(self, text, add_bos=True, special=False):
+
+        """ Tokenizes text. """
+
+        n_ctx = self.n_ctx_train()
+        tokens = (ctypes.c_int32 * n_ctx)()
+        # change from self._model.model
+        n_tokens = self._lib.llama_tokenize(self.vocab, text, len(text), tokens, n_ctx, add_bos, special)
+
+        if n_tokens < 0:
+            n_tokens = abs(n_tokens)
+            tokens = (ctypes.c_int32 * n_tokens)()
+
+            n_tokens = self._lib.llama_tokenize(self.vocab, text, len(text), tokens, n_tokens, add_bos, special)
+
+            if n_tokens < 0:
+                raise RuntimeError(f"GGUFVisionGenerativeModel - tokenization error - "
+                                   f"{text} - n_tokens={n_tokens}")
+
+        return list(tokens[:n_tokens])
+
+    def detokenize(self, tokens, special: bool = False) -> bytes:
+        output = b""
+        size = 32
+        buffer = (ctypes.c_char * size)()
+        for token in tokens:
+            n = self._lib.llama_token_to_piece(
+                # replace: self.model
+                self.vocab, llama_token(token), buffer, size, 0, special
+            )
+            assert n <= size
+            output += bytes(buffer[:n])
+
+        # following llama_cpp_python on below ...
+        # NOTE: Llama1 models automatically added a space at the start of the prompt
+        # this line removes a leading space if the first token is a beginning of sentence token
+
+        return (
+            output[1:]
+            if len(tokens) > 0 and tokens[0] == self.token_bos() and output[0:1] == b" "
+            else output
+        )
+
+    def accept(self, id, apply_grammar):
+
+        """ Formal step post sampling that 'accepts' and adds the token id to the running generation. """
+
+        if apply_grammar and self.grammar is not None:
+            self._lib.llama_grammar_accept_token(self._ctx.ctx, self.grammar.grammar, id)
+
+        self.prev.append(id)
+
+    def register_top_logits(self):
+
+        """ Gets the top logits and keeps a running log for output analysis. """
+
+        # TODO:  there is issue with first logit computation - not corresponding to first token
+        logit_pointer = self._lib.llama_get_logits(self._ctx.ctx)
+
+        logit_size = self.n_vocab()
+        logit_array = np.zeros(logit_size)
+        for x in range(0, logit_size):
+            logit_array[x] = logit_pointer[x]
+
+        sm = np.exp(logit_array) / sum(np.exp(logit_array))
+
+        sm_sorted = np.sort(sm)
+        sm_args_sorted = np.argsort(sm)
+
+        top_logits = []
+
+        for x in range(0, self.top_logit_count):
+            # experiment - try rounding the float number
+            pair = (sm_args_sorted[logit_size - x - 1], round(sm_sorted[logit_size - x - 1], 3))
+            top_logits.append(pair)
+            # print("--test: logits - ", x, top_logits)
+
+        self.logits_record.append(top_logits)
+
+        return top_logits
+
+    def set_api_key(self, api_key, env_var="USER_MANAGED_GGUF_API_KEY"):
+
+        """ Sets API key - generally not used in GGUF models. """
+
+        # set api_key
+        os.environ[env_var] = api_key
+        logger.info("added and stored GGUF api_key in environmental variable- %s", env_var)
+
+        return self
+
+    def _get_api_key(self, env_var="USER_MANAGED_GGUF_API_KEY"):
+
+        """ Gets API key - generally not used in GGUF models. """
+
+        self.api_key = os.environ.get(env_var)
+
+        if not self.api_key:
+            logger.warning("_get_api_key could not successfully retrieve value from: %s ", env_var)
+
+        return self.api_key
+
+    @property
+    def ctx(self):
+        return self._ctx.ctx
+
+    @property
+    def model(self):
+        return self._model.model
+
+    @property
+    def _input_ids(self):
+        return self.input_ids[: self.n_tokens]
+
+    @property
+    def _scores(self):
+        return self.scores[: self.n_tokens, :]
+
+    @property
+    def eval_tokens(self):
+        return deque(self.input_ids[: self.n_tokens].tolist(), maxlen=self._n_ctx)
+
+    def eval(self, tokens):
+
+        """Evaluate a list of tokens.
+
+        Args:
+            tokens: The list of tokens to evaluate.
+        """
+
+        memory = self._ctx.memory
+        self._lib.llama_memory_seq_rm(memory, -1, self.n_tokens, -1)
+
+        for i in range(0, len(tokens), self.n_batch):
+            batch = tokens[i: min(len(tokens), i + self.n_batch)]
+            n_past = self.n_tokens
+            n_tokens = len(batch)
+            self._batch.set_batch(
+                batch=batch, n_past=n_past, logits_all=self._logits_all
+            )
+
+            self._lib.llama_decode(self._ctx.ctx, self._batch.batch)
+
+            # Save tokens
+            self.input_ids[n_past: n_past + n_tokens] = batch
+
+            # Save logits
+            if self._logits_all:
+                rows = n_tokens
+                cols = self._n_vocab
+                logits = np.ctypeslib.as_array(
+                    self._ctx.get_logits(), shape=(rows * cols,)
+                )
+                self.scores[n_past: n_past + n_tokens, :].reshape(-1)[::] = logits
+            else:
+                pass
+            # Update n_tokens
+
+            self.n_tokens += n_tokens
+
+    @property
+    def eval_logits(self):
+        return deque(
+            self.scores[: self.n_tokens, :].tolist(),
+            maxlen=self._n_ctx if self._logits_all else 1,
+        )
+
+    def reset(self):
+        self.n_tokens = 0
+
+    def n_ctx(self):
+        return self._lib.llama_n_ctx(self._ctx.ctx)
+
+    def n_ctx_train(self):
+        return self._lib.llama_n_ctx_train(self._model.model)
+
+    def n_vocab(self):
+        # llama_model_get_vocab(model)
+        n_vocab = self._lib.llama_n_vocab(self._lib.llama_model_get_vocab(self._model.model))
+        return n_vocab
+
+    def token_eos(self):
+        # return self._lib.llama_token_eos(self._model.model)
+        eos = self._lib.llama_token_eos(self.vocab)
+        return eos
+
+    def token_bos(self):
+        # return self._lib.llama_token_bos(self._model.model)
+        bos = self._lib.llama_token_bos(self.vocab)
+        return bos
+
+    def token_nl(self):
+        token_nl = self._lib.llama_token_nl(self._lib.llama_model_get_vocab(self._model.model))
+        # return self._lib.llama_token_nl(self._model.model)
+        return token_nl
+
+    def unload_model(self):
+
+        """ Unloads a model to release memory """
+
+        # note: removing pointer seems to safely remove from Python reference tracking
+
+        self._batch = None
+        self._ctx = None
+        self._model = None
+
+        return 0
+
+    def inference(self, prompt, image_path, add_context=None, add_prompt_engineering=None, api_key=None,
+                  inference_dict=None, get_logits=False, disable_eos=False):
+
+        """ Main method for inference generation. """
+
+        logger.info("GGUFVisionGenerativeModel - Starting generation inference")
+
+        time_start = time.time()
+
+        media_marker = self._libmtmd.mtmd_default_marker().decode('utf-8')
+        text = "\n" + str(media_marker) + prompt
+
+        self.prompt = text
+        prompt = self.prompt
+
+        if add_context:
+            self.add_context = add_context
+
+        if add_prompt_engineering:
+            self.add_prompt_engineering = add_prompt_engineering
+
+        #   update default handling for no add_prompt_engineering
+
+        if not self.add_prompt_engineering:
+            if self.add_context:
+                self.add_prompt_engineering = "default_with_context"
+            else:
+                self.add_prompt_engineering = "default_no_context"
+
+        # start with clean logits_record and output_tokens for each function call
+        self.logits_record = []
+        self.output_tokens = []
+
+        if get_logits:
+            self.get_logits = get_logits
+
+        if inference_dict:
+
+            if "temperature" in inference_dict:
+                self.temperature = inference_dict["temperature"]
+
+            if "max_tokens" in inference_dict:
+                self.target_requested_output_tokens = inference_dict["max_tokens"]
+
+        #   preview before generation
+        # self.preview()
+
+        # prompt = prompt
+
+        if self.add_prompt_engineering:
+            prompt_enriched = self.prompt_engineer(self.prompt, self.add_context, inference_dict=inference_dict)
+            prompt_final = prompt_enriched
+
+            # most models perform better with no trailing space or line-break at the end of prompt
+            #   -- in most cases, the trailing space will be ""
+            #   -- yi model prefers a trailing "\n"
+            #   -- keep as parameterized option to maximize generation performance
+            #   -- can be passed either thru model_card or model config from HF
+
+            prompt = prompt_final + self.trailing_space
+
+        # prepare embedded image prompt with fully templated prompt
+        prompt_tokens = self.prepare_image_prompt(prompt, image_path)
+
+        # output_response = self._inference(text_prompt)
+
+        #   starts _inference here
+        completion_tokens = [] if len(prompt_tokens) > 0 else [self.token_bos()]
+
+        # todo: safety checks to confirm that input is smaller than context_window
+        input_len = len(prompt_tokens)
+        context_window = self.n_ctx()
+
+        text = b""
+
+        token_list = []
+        token_counter = 0
+        text_output = ""
+
+        for token in self.generate(prompt_tokens):
+
+            completion_tokens.append(token)
+
+            if not disable_eos:
+                if token == self._token_eos:
+                    break
+
+            if len(completion_tokens) > self.max_output_len:
+                break
+
+            #   stop if combined input + output at context window size
+            if (input_len + len(completion_tokens)) >= context_window:
+                break
+
+            new_token = self.detokenize([token]).decode('utf-8', errors='ignore')
+
+            text_output += new_token
+            token_counter += 1
+
+        # text_str = text_output.decode("utf-8", errors="ignore")
+
+        usage = {"input": input_len,
+                 "output": token_counter,
+                 "total": input_len + token_counter,
+                 "metric": "tokens",
+                 "processing_time": time.time() - time_start}
+
+        response = {"llm_response": text_output, "usage": usage}
+
+        self.register()
+
+        return response
+
+    def stream(self, prompt, image_path, add_context=None, add_prompt_engineering=None, api_key=None,
+               inference_dict=None,
+               get_logits=False, disable_eos=False):
+
+        """ Main method for text streaming generation. Returns a generator function that yields one
+        token at a time for real-time streaming to console or UI. """
+
+        logger.info("GGUFVisionGenerativeModel - Starting generation stream")
+
+        media_marker = self._libmtmd.mtmd_default_marker().decode('utf-8')
+        text = "\n" + str(media_marker) + prompt
+
+        self.prompt = text
+        prompt = self.prompt
+
+        if add_context:
+            self.add_context = add_context
+
+        if add_prompt_engineering:
+            self.add_prompt_engineering = add_prompt_engineering
+
+        #   update default handling for no add_prompt_engineering
+
+        if not self.add_prompt_engineering:
+            if self.add_context:
+                self.add_prompt_engineering = "default_with_context"
+            else:
+                self.add_prompt_engineering = "default_no_context"
+
+        # start with clean logits_record and output_tokens for each function call
+        self.logits_record = []
+        self.output_tokens = []
+
+        if get_logits:
+            self.get_logits = get_logits
+
+        if inference_dict:
+
+            if "temperature" in inference_dict:
+                self.temperature = inference_dict["temperature"]
+
+            if "max_tokens" in inference_dict:
+                self.target_requested_output_tokens = inference_dict["max_tokens"]
+
+        #   preview before generation
+        # self.preview()
+
+        # prompt = prompt
+
+        if self.add_prompt_engineering:
+            prompt_enriched = self.prompt_engineer(self.prompt, self.add_context, inference_dict=inference_dict)
+            prompt_final = prompt_enriched
+
+            # most models perform better with no trailing space or line-break at the end of prompt
+            #   -- in most cases, the trailing space will be ""
+            #   -- yi model prefers a trailing "\n"
+            #   -- keep as parameterized option to maximize generation performance
+            #   -- can be passed either thru model_card or model config from HF
+
+            prompt = prompt_final + self.trailing_space
+
+        # prepare embedded image prompt with fully templated prompt
+        prompt_tokens = self.prepare_image_prompt(prompt, image_path)
+
+        # output_response = self._inference(text_prompt)
+
+        #   starts _inference here
+        completion_tokens = [] if len(prompt_tokens) > 0 else [self.token_bos()]
+
+        #todo: safety checks to confirm that input is smaller than context_window
+        input_len = len(prompt_tokens)
+        context_window = self.n_ctx()
+
+        text = b""
+
+        # disable_eos = True
+        token_list = []
+
+        for token in self.generate(prompt_tokens):
+
+            completion_tokens.append(token)
+
+            if not disable_eos:
+                if token == self._token_eos:
+                    break
+
+            if len(completion_tokens) > self.max_output_len:
+                break
+
+            #   stop if combined input + output at context window size
+            if (input_len + len(completion_tokens)) >= context_window:
+                break
+
+            new_token = self.detokenize([token]).decode('utf-8', errors='ignore')
+
+            yield new_token
+
+        text_str = text.decode("utf-8", errors="ignore")
+
+        #   turned off
+        self.register()
+
+        return text_str
+
+
+    def function_call(self, context, function=None, params=None,get_logits=True,temperature=-99.0,max_output=None):
+        """ Not implemented for this model class. """
+        return True
+
+    def function_call_over_api_endpoint(self, context="", tool_type="", model_name="", params="", prompt="",
+                                        function=None, endpoint_base=None, api_key=None, get_logits=False):
+        """ Not implemented for this model class """
+        return True
+
+    def inference_over_api_endpoint(self, prompt, context=None, inference_dict=None, get_logits=False):
+        """ Not implemented for this model class """
+        return True
